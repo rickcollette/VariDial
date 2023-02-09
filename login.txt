@@ -1,0 +1,12 @@
+
+Welcome to Vari*Dial #000
+If you are new, press ENTER/RETURN
+when you are asked for your user number.
+
+You can request an account by typing:
+/r email@email.com
+
+Thank you!
+  - megalith
+
+  
