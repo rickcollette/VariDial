@@ -30,17 +30,20 @@ type User struct {
 	Number     int
 	Password   string
 	Level      int
+	Channel    int
 }
 
 var (
 	clients          map[string]*telnet.Connection
 	takenLineNumbers = make(map[int]bool)
-	lineNumbers      = make(map[string]int)
+	lineNumbers      = make(map[string]User)
 )
 
-func broadcastMessage(message string) {
-	for _, client := range clients {
-		client.Write([]byte(message + "\r\n"))
+func broadcastMessage(message string, sender User) {
+	for username, conn := range clients {
+		if user, ok := lineNumbers[username]; ok && user.Channel == sender.Channel {
+			conn.Write([]byte(message + "\r\n"))
+		}
 	}
 }
 
@@ -52,12 +55,41 @@ func readLine(conn *telnet.Connection) (string, error) {
 	}
 	return strings.TrimSpace(string(line)), nil
 }
+func sendAll(message string) {
+	for _, conn := range clients {
+		conn.Write([]byte(message + "\r\n"))
+	}
+}
 
-func processCommand(conn *telnet.Connection, username string, message string, userlevel int) {
+/* fix this with the following:
+input := "p12 message stuff"
+
+// Split the input string into two parts, separated by a space
+parts := strings.SplitN(input, " ", 2)
+
+// The first part will be the first character and the number
+firstPart := parts[0]
+
+// The second part will be the rest of the message
+secondPart := parts[1]
+
+// Extract the number from the first part
+number, err := strconv.Atoi(firstPart[1:])
+if err != nil {
+    // Handle the error, for example by logging it
+    fmt.Println("Error converting number:", err)
+}
+
+fmt.Println("Number:", number)
+fmt.Println("Message:", secondPart)
+*/
+
+func processCommand(conn *telnet.Connection, userchannel int, username string, message string, userlevel int, db *sql.DB) {
 	if message[0] == '/' {
 		parts := strings.SplitN(message[1:], " ", 2)
 		command := parts[0]
 		var args string
+		fmt.Println("Command:", command)
 		if len(parts) == 2 {
 			args = parts[1]
 		}
@@ -65,11 +97,11 @@ func processCommand(conn *telnet.Connection, username string, message string, us
 		case "q":
 			conn.Close()
 			delete(clients, username)
-			broadcastMessage(fmt.Sprintf("\r\n%s left the chat\n", username))
+			sendAll(fmt.Sprintf("\r\n%s left the chat\n", username))
 		case "s":
 			var usernames []string
-			for u, ln := range lineNumbers {
-				usernames = append(usernames, fmt.Sprintf("#%d[T1: %s: \r\n", ln, u))
+			for username, user := range lineNumbers {
+				usernames = append(usernames, fmt.Sprintf("#%d[T1: %s: \r\n", user.LineNumber, username))
 			}
 			conn.Write([]byte(fmt.Sprintf("\r\n->.\r\n    Online\r\n    ------------\r\n    %s\r\n", strings.Join(usernames, ", "))))
 		case "p":
@@ -78,14 +110,31 @@ func processCommand(conn *telnet.Connection, username string, message string, us
 				conn.Write([]byte("Invalid private message format. Use /p# message.\r\n"))
 				break
 			}
-			toLineNumberStr := split[0][1:]
+			toLineNumberStr := split[0]
 			toLineNumber, err := strconv.Atoi(toLineNumberStr)
 			if err != nil {
 				conn.Write([]byte(fmt.Sprintf("Invalid line number: %s\r\n", toLineNumberStr)))
 				break
 			}
 			privateMessage := split[1]
-			sendPrivateMessageByLineNumber(username, toLineNumber, privateMessage)
+			fmt.Println("Sending private message from", username, "to", toLineNumber, ":", privateMessage)
+			sendPrivateMessageByLineNumber(userchannel, username, toLineNumber, privateMessage)
+
+		case "t":
+			channelStr := strings.TrimSpace(args)
+			channel, err := strconv.Atoi(channelStr)
+			if err != nil || channel < 1 || channel > 4 {
+				conn.Write([]byte("Error: invalid channel. Must be a number between 1 and 4.\r\n"))
+				break
+			}
+			user, ok := lineNumbers[username]
+			if !ok {
+				conn.Write([]byte("Error: user not found.\r\n"))
+				break
+			}
+			user.Channel = channel
+			conn.Write([]byte(fmt.Sprintf("Changed to channel %d.\r\n", channel)))
+			updateUser(username, channel, db)
 		case "i":
 			conn.Write([]byte(fmt.Sprintf("\r\n->.\r\n    %s\r\n", SystemName)))
 		case "?":
@@ -96,16 +145,31 @@ func processCommand(conn *telnet.Connection, username string, message string, us
 	}
 }
 
+func updateUser(username string, channel int, db *sql.DB) error {
+	query := `UPDATE users SET channel = ? WHERE number, username = ?,?`
+	stmt, err := db.Prepare(query)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(channel, username)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func login(number int, password string, db *sql.DB) *User {
 	var user User
 	err := db.QueryRow(`SELECT username, number, level FROM users WHERE number = ? AND password = ?`, number, password).Scan(&user.Username, &user.Number, &user.Level)
 	if err != nil {
 		return nil
 	}
+	user.Channel = 1
 	return &user
 }
 
-func sendPrivateMessageByLineNumber(fromUsername string, toLineNumber int, message string) {
+func sendPrivateMessageByLineNumber(fromChannel int, fromUsername string, toLineNumber int, message string) {
 	toUsername := getUsernameByLineNumber(toLineNumber)
 	if toUsername == "" {
 		return
@@ -114,12 +178,12 @@ func sendPrivateMessageByLineNumber(fromUsername string, toLineNumber int, messa
 	if !ok {
 		return
 	}
-	toConn.Write([]byte(fmt.Sprintf("\r\nP[T1:%s] ( %s )\r\n", fromUsername, message)))
+	toConn.Write([]byte(fmt.Sprintf("\r\nP[T%d:%s] ( %s )\r\n", fromChannel, fromUsername, message)))
 }
 
 func getUsernameByLineNumber(toLineNumber int) string {
-	for username, lineNumber := range lineNumbers {
-		if lineNumber == toLineNumber {
+	for username, user := range lineNumbers {
+		if user.LineNumber == toLineNumber {
 			return username
 		}
 	}
@@ -153,23 +217,19 @@ func showFile(conn *telnet.Connection, filename string) {
 	}
 }
 
-func formMessage(line int, uname string, message string, ulevel int) string {
+func formMessage(line int, channel int, uname string, message string, ulevel int) string {
 	if ulevel == 0 {
-		return fmt.Sprintf("#%d( %s ): %s\r\n", line, uname, message)
+		return fmt.Sprintf("#%d(T%d:%s ): %s\r\n", line, channel, uname, message)
 	} else if ulevel == 1 {
-		return fmt.Sprintf("#%d[ %s ): %s\r\n", line, uname, message)
+		return fmt.Sprintf("#%d[T%d:%s ): %s\r\n", line, channel, uname, message)
 	} else if ulevel == 2 {
-		return fmt.Sprintf("#%d< %s ): %s\r\n", line, uname, message)
+		return fmt.Sprintf("#%d<T%d:%s ): %s\r\n", line, channel, uname, message)
 	} else if ulevel == 3 {
-		return fmt.Sprintf("#%d< %s ]: %s\r\n", line, uname, message)
+		return fmt.Sprintf("#%d<T%d:%s ]: %s\r\n", line, channel, uname, message)
 	} else if ulevel == 4 {
-		return fmt.Sprintf("#%d< %s >: %s\r\n", line, uname, message)
+		return fmt.Sprintf("#%d<T%d:%s >: %s\r\n", line, channel, uname, message)
 	}
 	return ("Error: No user Level")
-}
-
-func freeLineNumber(lineNumber int) {
-	takenLineNumbers[lineNumber] = false
 }
 
 func handleConnection(conn *telnet.Connection, db *sql.DB) {
@@ -203,28 +263,22 @@ func handleConnection(conn *telnet.Connection, db *sql.DB) {
 		return
 	}
 	conn.Write([]byte("\r\n/? for help\r\n"))
-
 	user.LineNumber = lineNumber
 	clients[user.Username] = conn
-	lineNumbers[user.Username] = lineNumber
-	broadcastMessage(fmt.Sprintf("\r\n->\r\n   +#%d:%s\r\n", lineNumber, user.Username))
+	lineNumbers[user.Username] = *user
+	broadcastMessage(fmt.Sprintf("\r\n->\r\n +#%d:%s\r\n", lineNumber, user.Username), *user)
 	for {
 		message, err := readLine(conn)
 		if err != nil {
 			break
 		}
 		if len(message) > 0 && message[0] == '/' {
-			processCommand(conn, user.Username, message, user.Level)
+			processCommand(conn, user.Channel, user.Username, message, user.Level, db)
 		} else {
-			sendAllMessage := formMessage(lineNumber, user.Username, message, user.Level)
-			broadcastMessage(sendAllMessage)
+			sendAllMessage := formMessage(lineNumber, user.Channel, user.Username, message, user.Level)
+			broadcastMessage(sendAllMessage, *user)
 		}
 	}
-	conn.Close()
-	delete(clients, user.Username)
-	freeLineNumber(lineNumber)
-	delete(lineNumbers, user.Username)
-	broadcastMessage(fmt.Sprintf("\r\n-> \r\n   %s left the chat\r\n", user.Username))
 }
 
 func main() {
