@@ -153,6 +153,21 @@ func showFile(conn *telnet.Connection, filename string) {
 	}
 }
 
+func formMessage(line int, uname string, message string, ulevel int) string {
+	if ulevel == 0 {
+		return fmt.Sprintf("#%d( %s ): %s\r\n", line, uname, message)
+	} else if ulevel == 1 {
+		return fmt.Sprintf("#%d[ %s ): %s\r\n", line, uname, message)
+	} else if ulevel == 2 {
+		return fmt.Sprintf("#%d< %s ): %s\r\n", line, uname, message)
+	} else if ulevel == 3 {
+		return fmt.Sprintf("#%d< %s ]: %s\r\n", line, uname, message)
+	} else if ulevel == 4 {
+		return fmt.Sprintf("#%d< %s >: %s\r\n", line, uname, message)
+	}
+	return ("Error: No user Level")
+}
+
 func freeLineNumber(lineNumber int) {
 	takenLineNumbers[lineNumber] = false
 }
@@ -201,7 +216,8 @@ func handleConnection(conn *telnet.Connection, db *sql.DB) {
 		if len(message) > 0 && message[0] == '/' {
 			processCommand(conn, user.Username, message, user.Level)
 		} else {
-			broadcastMessage(fmt.Sprintf("#%d[%s]: %s\r\n", lineNumber, user.Username, message))
+			sendAllMessage := formMessage(lineNumber, user.Username, message, user.Level)
+			broadcastMessage(sendAllMessage)
 		}
 	}
 	conn.Close()

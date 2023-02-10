@@ -136,7 +136,8 @@ func main() {
 	if len(os.Args) < 2 {
 		log.Fatalf("Expected at least one command-line argument")
 	}
-	db, err := sql.Open("sqlite3", "./crud.db")
+	fmt.Println("Command: ", os.Args[1])
+	db, err := sql.Open("sqlite3", "./users.db")
 	if err != nil {
 		log.Fatalf("Error opening database: %v", err)
 	}
@@ -146,7 +147,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error creating table: %v", err)
 	}
-
 	switch os.Args[1] {
 	case "list":
 		err := listUsers(db)
@@ -155,9 +155,10 @@ func main() {
 		}
 	case "help":
 		showHelp()
-	case "create":
-		if len(os.Args) < 7 {
-			log.Fatalf("Expected 6 arguments for creating user")
+	case "add":
+		fmt.Println("Adding user...")
+		if len(os.Args) < 5 {
+			log.Fatalf("Expected 5 arguments for creating user")
 		}
 		active, _ := strconv.Atoi(os.Args[2])
 		username := os.Args[3]
@@ -208,7 +209,7 @@ func main() {
 		}
 		fmt.Println("Number of rows affected:", affect)
 	default:
-		log.Fatalf("Unsupported command-line argument")
+		log.Fatalf("X:Unsupported command-line argument")
 		showHelp()
 	}
 }
